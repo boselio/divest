@@ -6,6 +6,9 @@ from sklearn.base import BaseEstimator, ClassifierMixin, TransformerMixin
 from sklearn.utils.validation import check_X_y, check_array, check_is_fitted
 from sklearn.utils.multiclass import unique_labels
 from sklearn.metrics import euclidean_distances
+from scipy.stats import entropy
+import scipy.spatial.distance as dist
+import itertools
 
 
 class GHPEstimator(BaseEstimator):
@@ -61,17 +64,17 @@ class GHPEstimator(BaseEstimator):
                 self.gfr_ints[l1, l2] /= 2 * n_samples
                 self.gfr_ints[l2, l1] = gfr_ints[l1, l2]
         else:
-            for (p1, f1, l1), (p2, f2, l2) in itertools.combinations(zip(self.priors,
+            for (p1, f1, l1, i1), (p2, f2, l2, i2) in itertools.combinations(zip(self.priors,
                                                                          self.distributions,
-                                                                         self.labels)):
-                est1 = (f1(X[labels == l2]) /
-                        sum([p * f(X[labels == l2]) for (p, f) in zip(priors, fs)])).sum() / np.sum(labels == l2)
+                                                                         self.labels, range(self.num_labels)), 2):
+                est1 = (f1(X[y == l2]) /
+                        sum([p * f(X[y == l2]) for (p, f) in zip(self.priors, self.distributions)])).sum() / np.sum(y == l2)
 
-                est2 = (f2(X[labels == l1]) /
-                        sum([p * f(X[labels == l1]) for (p, f) in zip(priors, fs)])).sum() / np.sum(labels == l1)
+                est2 = (f2(X[y == l1]) /
+                        sum([p * f(X[y == l1]) for (p, f) in zip(self.priors, self.distributions)])).sum() / np.sum(y == l1)
 
-                self.gfr_ints[l1,l2] = p1 * p2 * (est1 + est2) / 2
-                self.gfr_ints[l2,l1] = p1 * p2 * (est1 + est2) / 2
+                self.gfr_ints[i1,i2] = p1 * p2 * (est1 + est2) / 2
+                self.gfr_ints[i2,i1] = p1 * p2 * (est1 + est2) / 2
         # Return the estimator
         return self
 
@@ -88,19 +91,25 @@ class GHPEstimator(BaseEstimator):
         """
         raise NotImplementedError(
             "THis is not implemented yet.")
-
-
-class HPEstimator(BaseEstimator):
-    """ A MST-based estimator for Henze-Penrose divergence.
+class JSEstimator(BaseEstimator):
+    """ An estimator for generalized Jensen-Shannon divergence.
 
     Parameters
     ----------
+    distributions: list, optional (default None)
+        List of callable pdfs. If None are given, then the MST is used to
+        estimate the integrals. Otherwise, an MCMC approach is utilized.
+    priors: array-like, optional (default=None)
+        array of priors corresponding to the distributions. If none are given,
+        then the data is used to estimate the parameters.
     """
-    def __init__(self):
-       return
+    def __init__(self, distributions=None, priors=None):
+        self.distributions = distributions
+        self.priors = priors
+
 
     def fit(self, X, y):
-        """ Approximate the MST integral estimates for all pairs of class labels
+        """ Approximate the generalized JS divergence.
 
         Parameters
         ----------
@@ -115,24 +124,32 @@ class HPEstimator(BaseEstimator):
             Returns self.
         """
         X, y = check_X_y(X, y)
-        n = X.shape[0]
+        n_samples, n_features = X.shape
 
-        label_set = set(np.unique(y))
-        self.ordered_labels = sorted(label_set)
-        assert len(ordered_labels) == 2
+        self.labels, counts = np.unique(y, return_counts=True)
+        self.num_labels = self.labels.shape[0]
 
-        A = dist.squareform(dist.pdist(X, 'euclidean'))
-        MST = sps.csgraph.minimum_spanning_tree(A).toarray()
-        x1, x2 = MST.nonzero()
+        if self.priors is None:
+            self.priors = counts / n_samples
 
-        self.fr_stat = sum(y[x1] != y[x2])
+        if self.distributions is None:
+            raise NotImplementedError(
+                "No method for estimating JS divergence is implemented.")
 
+        else:
+            sum1 = -np.log2(sum([p * f(X) for p, f in zip(self.priors, self.distributions)])).sum() / n_samples
+
+            sum2 = 0
+            for l, p, f in zip(self.labels, self.priors, self.distributions):
+                sum2 += p * -np.log2(f(X[y == l, :])).sum() / np.sum(y == l)
+
+            self.js_est = sum1 - sum2
 
         # Return the estimator
         return self
 
-    def get_bayes_bounds(self):
-        """ Estimates the Bayes error from the estimated GHP integrals.
+    def get_js_estimate(self):
+        """ Returns the estimate for generalized Jensen-Shannon divergence.
 
         Parameters
         ----------
@@ -140,11 +157,10 @@ class HPEstimator(BaseEstimator):
 
         Returns
         -------
-        bayes_estimate : float
-            Estimate Bayes error estimate for the multi-class classification problem.
+        js_estimate : float
+            Estimate of the generalized Jensen-Shannon divergence.
         """
-        ghp_sum = np.sum(np.triu(self.gfr_ints, 1))
-        return (self.bayes_lower, self.bayes_upper)
+        return self.js_est
 
 
 class BayesErrorEstimator(BaseEstimator):
@@ -177,15 +193,14 @@ class BayesErrorEstimator(BaseEstimator):
             Returns self.
         """
 
-        X, y = check_(X, y)
+        X, y = check_X_y(X, y)
         self.n_samples, self.n_features = X.shape
         self.num_labels = np.unique(y).shape[0]
         self.label_types = np.sort(np.unique(y))
 
-        if method == 'GHP':
-            ghp_est = GHPEstimator()
+        if self.method == 'GHP':
+            ghp_est = GHPEstimator(priors=self.priors, distributions=self.conditionals)
             ghp_est.fit(X, y)
-
             ghp_sum = np.sum(np.triu(ghp_est.gfr_ints, 1))
 
             self.bayes_upper = 2 * ghp_sum
@@ -193,7 +208,7 @@ class BayesErrorEstimator(BaseEstimator):
                            1 - (1 - 2 * self.num_labels / (self.num_labels - 1) * ghp_sum)**(0.5))
             self.bayes_est = None
 
-        elif method == 'MCMC':
+        elif self.method == 'MCMC':
             if self.conditionals is None:
                 raise ValueError(
                     "You must pass valid conditional distributions for direct MCMC estimation.")
@@ -212,33 +227,50 @@ class BayesErrorEstimator(BaseEstimator):
             self.bayes_upper = None
             self.bayes_lower = None
 
-        elif method == 'JS':
-            js_est = JSEstimator()
+        elif self.method == 'JS':
+            js_est = JSEstimator(priors=self.priors, distributions=self.conditionals)
             js_est.fit(X, y)
 
-            self.bayes_upper = 0.5 * (entropy(self.priors, base=2) - js_est.js_estimate)
-            self.bayes_lower = 1 / (4 * (self.num_labels - 1)) * (entropy(self.priors, base=2) - js_est.js_estimate)**2
+            js_estimate = js_est.get_js_estimate()
+            self.bayes_upper = 0.5 * (entropy(self.priors, base=2) - js_estimate)
+            self.bayes_lower = 1 / (4 * (self.num_labels - 1)) * (entropy(self.priors, base=2) - js_estimate)**2
             self.bayes_est = None
 
-        elif method == 'PW':
+        elif self.method == 'PW':
             hp_est = GHPEstimator()
             self.bayes_upper = 0
             self.bayes_lower = 0
 
-            for (l1, l2) in itertools.product(self.label_types, 2):
+            if self.priors is None:
+                _, counts = np.unique(y, return_counts=True)
+                self.priors = counts / self.num_labels
 
-                isl1l2 = (y == l1) | (y == l2)
-                self.pw_lower, self.pw_upper = self.ghp_bound(X[isl1l2, :],
-                                                              y[isl1l2],
-                                                              priors=self.priors[isl1l2],
-                                                              conditionals=self.conditionals[isl1l2])
-                self.bayes_lower += self.priors[isl1l2].sum() * self.pw_lower
-                self.bayes_upper += self.priors[isl1l2].sum() * self.pw_upper
+            if self.conditionals is None:
+                for (l1, p1), (l2, p2) in itertools.combinations(zip(self.label_types, self.priors), 2):
+                    hp_est = GHPEstimator()
+                    hp_est = hp_est.fit(X[(y == l1) | (y == l2), :], y[(y == l1) | (y == l2)])
+                    ptilde1 = p1 / (p1 + p2)
+                    ptilde2 = p2 / (p1 + p2)
+
+                    self.bayes_lower += (p1 + p2) * (0.5 - 0.5 * np.sqrt(1 - 4 * (hp_est.gfr_ints[0,1])))
+                    self.bayes_upper += (p1 + p2) * 2 * hp_est.gfr_ints[0,1]
+            else:
+                for (l1, p1, f1), (l2, p2, f2) in itertools.combinations(zip(self.label_types, self.priors, self.conditionals), 2):
+                    isl1l2 = (y == l1) | (y == l2)
+                    ptilde1 = p1 / (p1 + p2)
+                    ptilde2 = p2 / (p1 + p2)
+
+                    hp_est = GHPEstimator(priors=[ptilde1, ptilde2],
+                                          distributions=[f1, f2])
+                    hp_est = hp_est.fit(X[isl1l2, :], y[isl1l2])
+
+                    self.bayes_lower += (p1 + p2) * (1 - np.sqrt(1 - 4 * ( hp_est.gfr_ints[0,1])))
+                    self.bayes_upper += (p1 + p2) * 2 * hp_est.gfr_ints[0,1]
 
             self.bayes_lower = self.bayes_lower / self.num_labels
             self.bayes_est = None
 
-        elif method == 'PW-R':
+        elif self.method == 'PW-R':
             raise NotImplementedError(
                 "Recursive form of the pairwise estimate is not yet implemented.")
 
@@ -249,7 +281,7 @@ class BayesErrorEstimator(BaseEstimator):
         return self
 
 
-    def get_bounds(self):
+    def get_bayes_bounds(self):
         """ Get Bayes error bounds.
 
         Parameters
