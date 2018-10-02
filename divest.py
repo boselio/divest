@@ -9,7 +9,8 @@ from sklearn.metrics import euclidean_distances
 from scipy.stats import entropy
 import scipy.spatial.distance as dist
 import itertools
-
+from functools import partial
+from scipy.optimize import minimize
 
 class GHPEstimator(BaseEstimator):
     """ A MST-based estimator for Generalized Henze-Penrose divergence.
@@ -91,6 +92,40 @@ class GHPEstimator(BaseEstimator):
         """
         raise NotImplementedError(
             "THis is not implemented yet.")
+
+def recursive_bayes_estimator(X, y, distributions=None, priors=None):
+
+
+    if len(distributions) == 2:
+        b_est = BayesErrorEstimator(method='GHP', conditionals=distributions, priors=priors)
+        b_est.fit(X, y)
+        lb, ub = b_est.get_bayes_bounds()
+        return lb, ub
+
+    M = len(distributions)
+    lbs = np.zeros(M)
+    ubs = np.zeros(M)
+    for i in range(len(distributions)):
+        #Compute the bound, when removing i:
+        lb, ub = recursive_bayes_estimator(X[y != i], y[y != i], distributions=distributions[:i] + distributions[i+1:],
+                                           priors=priors[np.arange(len(priors))!=i])
+        lbs[i] = lb
+        ubs[i] = ub
+
+    lb = (M - 1) / ((M - 2) * M) * np.sum((1 - priors) * lbs)
+
+    def ub_function(alpha, priors, ubs, M):
+        return 1 / (M - 2*alpha) * np.sum((1 - priors) * ubs) + (1 - alpha) / (M - 2 * alpha)
+
+    ub_opt = partial(ub_function, priors=priors, ubs=ubs, M=M)
+    result = minimize(ub_opt, x0=0.5, bounds=[(0,1)])
+    alpha_opt = result.x[0]
+
+    ub = 1 / (M - 2*alpha_opt) * np.sum((1 - priors) * ubs) + (1 - alpha_opt) / (M - 2 * alpha_opt)
+
+    return lb, ub
+
+
 class JSEstimator(BaseEstimator):
     """ An estimator for generalized Jensen-Shannon divergence.
 
