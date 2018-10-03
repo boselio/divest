@@ -107,8 +107,10 @@ def recursive_bayes_estimator(X, y, distributions=None, priors=None):
     ubs = np.zeros(M)
     for i in range(len(distributions)):
         #Compute the bound, when removing i:
+        priors_without_i = priors[np.arange(len(priors))!=i]
+        priors_wihtout_i = priors_without_i / np.linalg.norm(priors_without_i, ord=1)
         lb, ub = recursive_bayes_estimator(X[y != i], y[y != i], distributions=distributions[:i] + distributions[i+1:],
-                                           priors=priors[np.arange(len(priors))!=i])
+                                           priors=priors_without_i)
         lbs[i] = lb
         ubs[i] = ub
 
