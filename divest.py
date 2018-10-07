@@ -11,6 +11,8 @@ import scipy.spatial.distance as dist
 import itertools
 from functools import partial
 from scipy.optimize import minimize
+import scipy.sparse as sps
+
 
 class GHPEstimator(BaseEstimator):
     """ A MST-based estimator for Generalized Henze-Penrose divergence.
@@ -59,11 +61,15 @@ class GHPEstimator(BaseEstimator):
             MST = sps.csgraph.minimum_spanning_tree(A).toarray()
 
             x1, x2 = MST.nonzero()
-            for l1, l2 in itertools.product(labels, repeat=2):
-                self.gfr_ints[l1, l2] += sum((y[x1] == l1) & (y[x2] == l2))
-                self.gfr_ints[l1, l2] += sum((y[x1] == l2) & (y[x2] == l1))
-                self.gfr_ints[l1, l2] /= 2 * n_samples
-                self.gfr_ints[l2, l1] = gfr_ints[l1, l2]
+            self.label_to_index = dict(zip(self.labels, range(self.num_labels)))
+
+            for l1, l2 in itertools.product(self.labels, repeat=2):
+                i1 = self.label_to_index[l1]
+                i2 = self.label_to_index[l2]
+                self.gfr_ints[i1, i2] += sum((y[x1] == l1) & (y[x2] == l2))
+                self.gfr_ints[i1, i2] += sum((y[x1] == l2) & (y[x2] == l1))
+                self.gfr_ints[i1, i2] /= 2 * n_samples
+                self.gfr_ints[i2, i1] = self.gfr_ints[i1, i2]
         else:
             for (p1, f1, l1, i1), (p2, f2, l2, i2) in itertools.combinations(zip(self.priors,
                                                                          self.distributions,
@@ -233,16 +239,16 @@ class BayesErrorEstimator(BaseEstimator):
         X, y = check_X_y(X, y)
         self.n_samples, self.n_features = X.shape
         self.num_labels = np.unique(y).shape[0]
-        self.label_types = np.sort(np.unique(y))
+        self.label_types = np.unique(y)
 
         if self.method == 'GHP':
             ghp_est = GHPEstimator(priors=self.priors, distributions=self.conditionals)
             ghp_est.fit(X, y)
             ghp_sum = np.sum(np.triu(ghp_est.gfr_ints, 1))
-
             self.bayes_upper = 2 * ghp_sum
+
             self.bayes_lower = (self.num_labels - 1) / self.num_labels * (
-                           1 - (1 - 2 * self.num_labels / (self.num_labels - 1) * ghp_sum)**(0.5))
+                1 - max(1 - 2 * self.num_labels / (self.num_labels - 1) * ghp_sum, 0)**(0.5))
             self.bayes_est = None
 
         elif self.method == 'MCMC':
