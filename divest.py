@@ -12,7 +12,7 @@ import itertools
 from functools import partial
 from scipy.optimize import minimize
 import scipy.sparse as sps
-
+from scipy.sparse.csgraph import minimum_spanning_tree
 
 class GHPEstimator(BaseEstimator):
     """ A MST-based estimator for Generalized Henze-Penrose divergence.
@@ -58,12 +58,14 @@ class GHPEstimator(BaseEstimator):
 
         if self.distributions is None:
             A = dist.squareform(dist.pdist(X, 'euclidean'))
-            MST = sps.csgraph.minimum_spanning_tree(A).toarray()
+            MST = minimum_spanning_tree(A).toarray()
 
             x1, x2 = MST.nonzero()
             self.label_to_index = dict(zip(self.labels, range(self.num_labels)))
 
-            for l1, l2 in itertools.product(self.labels, repeat=2):
+            for l1, l2 in itertools.combinations(self.labels, r=2):
+                if l1 == l2:
+                    continue
                 i1 = self.label_to_index[l1]
                 i2 = self.label_to_index[l2]
                 self.gfr_ints[i1, i2] += sum((y[x1] == l1) & (y[x2] == l2))
@@ -114,7 +116,7 @@ def recursive_bayes_estimator(X, y, distributions=None, priors=None):
     for i in range(len(distributions)):
         #Compute the bound, when removing i:
         priors_without_i = priors[np.arange(len(priors))!=i]
-        priors_wihtout_i = priors_without_i / np.linalg.norm(priors_without_i, ord=1)
+        priors_without_i = priors_without_i / np.linalg.norm(priors_without_i, ord=1)
         lb, ub = recursive_bayes_estimator(X[y != i], y[y != i], distributions=distributions[:i] + distributions[i+1:],
                                            priors=priors_without_i)
         lbs[i] = lb
@@ -295,7 +297,7 @@ class BayesErrorEstimator(BaseEstimator):
                     ptilde1 = p1 / (p1 + p2)
                     ptilde2 = p2 / (p1 + p2)
 
-                    self.bayes_lower += (p1 + p2) * (0.5 - 0.5 * np.sqrt(1 - 4 * (hp_est.gfr_ints[0,1])))
+                    self.bayes_lower += (p1 + p2) * (0.5 - 0.5 * np.sqrt(max(1 - 4 * (hp_est.gfr_ints[0,1]), 0)))
                     self.bayes_upper += (p1 + p2) * 2 * hp_est.gfr_ints[0,1]
             else:
                 for (l1, p1, f1), (l2, p2, f2) in itertools.combinations(zip(self.label_types, self.priors, self.conditionals), 2):
